@@ -59,16 +59,25 @@ export default function App() {
     }
   }, []);
 
-  // Fetch Market Data
-  const loadMarketData = useCallback(async () => {
+  // Fetch Market Data with automatic retry
+  const loadMarketData = useCallback(async (retryCount = 0) => {
     setIsLoading(true);
-    setError(null);
     try {
       const res = await fetch(
-        `/api/market-data?symbol=${currentSymbol}&equity=${accountEquity}&riskPct=${riskPct}`
+        `/api/market-data?symbol=${currentSymbol}&equity=${accountEquity}&riskPct=${riskPct}`,
+        {
+          headers: { Accept: "application/json" },
+        }
       );
       if (!res.ok) {
-        throw new Error(`Server returned status ${res.status}`);
+        let errMsg = `Server returned status ${res.status}`;
+        try {
+          const errData = await res.json();
+          if (errData.error) errMsg = errData.error;
+        } catch {
+          // ignore
+        }
+        throw new Error(errMsg);
       }
       const data = await res.json();
       setCandles15m(data.candles15m || []);
@@ -80,7 +89,15 @@ export default function App() {
       setConfluence(data.confluence || null);
       setMemo(data.memo || null);
       setHasGeminiKey(Boolean(data.hasGeminiKey));
+      setError(null);
     } catch (err: any) {
+      if (retryCount < 2) {
+        // Automatic retry after 1.5s in case dev server was initializing
+        setTimeout(() => {
+          loadMarketData(retryCount + 1);
+        }, 1500);
+        return;
+      }
       console.error("Market data fetch failed:", err);
       setError(err.message || "Failed to connect to market data feed");
     } finally {

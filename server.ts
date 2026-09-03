@@ -6,7 +6,7 @@ import {
   fetchKlines,
   fetchOrderBook,
   fetchDerivativesData,
-  fetch24hTicker,
+  fetchBulkTickers,
 } from "./src/server/binance";
 import {
   evaluateMarketStructure,
@@ -29,9 +29,35 @@ const DEFAULT_SYMBOLS = [
   "SUIUSDT",
 ];
 
+// In-memory cache for recent market data per symbol (3-second TTL)
+const marketDataCache = new Map<
+  string,
+  {
+    timestamp: number;
+    data: any;
+  }
+>();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // CORS and preflight headers
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, OPTIONS, PUT, DELETE"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, X-Requested-With"
+    );
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+    next();
+  });
 
   app.use(express.json());
 
@@ -45,26 +71,21 @@ async function startServer() {
   // Tickers list
   app.get("/api/tickers", async (req, res) => {
     try {
-      const results = await Promise.all(
-        DEFAULT_SYMBOLS.map(async (sym) => {
-          try {
-            return await fetch24hTicker(sym);
-          } catch {
-            return {
-              symbol: sym,
-              price: 0,
-              priceChangePercent: 0,
-              highPrice: 0,
-              lowPrice: 0,
-              volume: 0,
-              quoteVolume: 0,
-            };
-          }
-        })
-      );
+      const results = await fetchBulkTickers(DEFAULT_SYMBOLS);
       res.json({ symbols: results });
     } catch (err: any) {
-      res.status(500).json({ error: err.message || "Failed to fetch tickers" });
+      console.error("Tickers fetch error:", err);
+      // Return safe fallback array if any catastrophic error
+      const fallback = DEFAULT_SYMBOLS.map((sym) => ({
+        symbol: sym,
+        price: 0,
+        priceChangePercent: 0,
+        highPrice: 0,
+        lowPrice: 0,
+        volume: 0,
+        quoteVolume: 0,
+      }));
+      res.json({ symbols: fallback });
     }
   });
 
@@ -74,6 +95,15 @@ async function startServer() {
       const symbol = (req.query.symbol as string || "BTCUSDT").toUpperCase();
       const accountEquity = parseFloat((req.query.equity as string) || "10000");
       const riskPct = parseFloat((req.query.riskPct as string) || "1.0");
+
+      const cacheKey = `${symbol}_${accountEquity}_${riskPct}`;
+      const cached = marketDataCache.get(cacheKey);
+      const now = Date.now();
+
+      // Return cached if fresher than 3.5 seconds
+      if (cached && now - cached.timestamp < 3500) {
+        return res.json(cached.data);
+      }
 
       const [klines15mRes, klines1hRes, orderBook, derivatives] = await Promise.all([
         fetchKlines(symbol, "15m", 100),
@@ -106,7 +136,7 @@ async function startServer() {
         derivatives
       );
 
-      res.json({
+      const payload = {
         symbol,
         candles15m: klines15mRes.candles.slice(-60), // send last 60 candles for crisp chart
         candles1h: klines1hRes.candles.slice(-48),
@@ -117,7 +147,11 @@ async function startServer() {
         confluence,
         memo,
         hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
-      });
+      };
+
+      marketDataCache.set(cacheKey, { timestamp: now, data: payload });
+
+      res.json(payload);
     } catch (err: any) {
       console.error("Market data error:", err);
       res.status(500).json({ error: err.message || "Failed to fetch market structure" });
