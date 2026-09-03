@@ -1,4 +1,5 @@
 import { Candle, OrderBookData, DerivativesData } from "../types/trading";
+import WebSocket from "ws";
 
 const BINANCE_FUTURES_BASE = "https://fapi.binance.com";
 const BINANCE_SPOT_BASE = "https://api.binance.com";
@@ -405,8 +406,9 @@ let livePriceCache: { symbol: string; price: number; timestamp: number } | null 
 const LIVE_PRICE_TTL_MS = 900;
 
 // Persistent Binance futures WebSocket feed (push-based, avoids REST rate-limit
-// issues on cloud egress IPs). Maintains one connection that subscribes to
-// bookTicker streams and keeps a live price map updated in real time.
+// issues on cloud egress IPs). Uses the `ws` package so it works on Node 20
+// (which does not expose a global WebSocket). Maintains one connection that
+// subscribes to bookTicker streams and keeps a live price map updated in real time.
 const BINANCE_WS_BASE = "wss://fstream.binance.com/stream?streams=";
 const liveWsPrices: Record<string, number> = {};
 const liveWsStreams = new Set<string>();
@@ -436,13 +438,13 @@ function ensureLiveWs(stream: string) {
     return;
   }
 
-  liveWs.onopen = () => {
+  liveWs.on("open", () => {
     liveWs?.send(JSON.stringify({ method: "SUBSCRIBE", params: liveWsQueue, id: 1 }));
-  };
+  });
 
-  liveWs.onmessage = (event: any) => {
+  liveWs.on("message", (data) => {
     try {
-      const msg = JSON.parse(event.data);
+      const msg = JSON.parse(data.toString());
       if (msg.stream && /bookTicker$/.test(msg.stream)) {
         const sym = msg.stream.replace("@bookTicker", "").toUpperCase();
         const px = parseFloat(msg.data?.a); // best ask price as live indicative
@@ -451,10 +453,10 @@ function ensureLiveWs(stream: string) {
     } catch {
       // ignore malformed
     }
-  };
+  });
 
   const reconnect = () => {
-    liveWs?.close();
+    if (liveWs) { try { liveWs.close(); } catch {} }
     liveWs = null;
     if (liveWsStreams.size > 0 && !liveWsReconnectTimer) {
       liveWsReconnectTimer = setTimeout(() => {
@@ -463,8 +465,8 @@ function ensureLiveWs(stream: string) {
       }, 3000);
     }
   };
-  liveWs.onerror = reconnect;
-  liveWs.onclose = reconnect;
+  liveWs.on("error", reconnect);
+  liveWs.on("close", reconnect);
 }
 
 // Return the live WebSocket-derived price for a symbol (null if not yet received)
@@ -508,14 +510,15 @@ export async function fetchLivePrice(symbol: string): Promise<number> {
   }
 
   // 3) Fallback: derive from a recent kline close (proven to work on cloud egress).
-  // Reject synthetic (non-Binance) candles. 1h -> 15m -> 5m.
+  // Reject synthetic (non-Binance) candles. Use limit=100 (matches the working
+  // market-data path) rather than limit=1 which appears to be rejected at this egress.
   try {
-    for (const iv of ["1h", "15m", "5m"] as const) {
-      const kline = await fetchKlines(symbol, iv, 1);
-      const price = kline.candles[kline.candles.length - 1]?.close;
-      if (price && kline.source.startsWith("Binance")) {
-        livePriceCache = { symbol, price, timestamp: now };
-        return price;
+    for (const iv of ["15m", "1h", "5m"] as const) {
+      const kline = await fetchKlines(symbol, iv, 100);
+      const last = kline.candles[kline.candles.length - 1];
+      if (last && kline.source.startsWith("Binance")) {
+        livePriceCache = { symbol, price: last.close, timestamp: now };
+        return last.close;
       }
     }
   } catch {
@@ -530,6 +533,7 @@ export async function fetchLivePrice(symbol: string): Promise<number> {
   }
   return DEFAULT_ANCHOR_PRICES[symbol] || 100;
 }
+
 
 
 export async function fetchBulkTickers(requestedSymbols: string[]): Promise<
