@@ -1,0 +1,6 @@
+{
+  "name": "Crypto Day Trading Quant Desk",
+  "description": "Institutional-grade pre-trade decision memo and intraday quantitative market structure engine for crypto assets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
