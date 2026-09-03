@@ -421,16 +421,20 @@ export async function fetchLivePrice(symbol: string): Promise<number> {
     livePriceCache = { symbol, price, timestamp: now };
     return price;
   }
-  // Fallback: derive from a 1m kline (proven to work on cloud egress IPs)
+  // Fallback: derive from a recent kline close (proven to work on cloud egress IPs).
+  // Use 1h interval — the 1m interval is more aggressively rate-limited/blocked on Render's egress,
+  // which would otherwise return synthetic candles. Fall back through 1h -> 15m -> 5m for freshness.
   try {
-    const kline = await fetchKlines(symbol, "1m", 1);
-    const price = kline.candles[kline.candles.length - 1]?.close;
-    if (price) {
-      livePriceCache = { symbol, price, timestamp: now };
-      return price;
+    for (const iv of ["1h", "15m", "5m"] as const) {
+      const kline = await fetchKlines(symbol, iv, 1);
+      const price = kline.candles[kline.candles.length - 1]?.close;
+      if (price && kline.source.startsWith("Binance")) {
+        livePriceCache = { symbol, price, timestamp: now };
+        return price;
+      }
     }
   } catch {
-    // continue
+    // continue to cached/anchor
   }
   // Last resort: cached or anchor
   if (livePriceCache && livePriceCache.symbol === symbol) return livePriceCache.price;
