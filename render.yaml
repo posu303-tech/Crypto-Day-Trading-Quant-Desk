@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: crypto-day-trading-quant-desk
+    runtime: docker
+    repo: https://github.com/posu303-tech/Crypto-Day-Trading-Quant-Desk
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: GEMINI_API_KEY
+        sync: false
