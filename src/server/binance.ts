@@ -409,6 +409,7 @@ export async function fetchLivePrice(symbol: string): Promise<number> {
   if (livePriceCache && livePriceCache.symbol === symbol && now - livePriceCache.timestamp < LIVE_PRICE_TTL_MS) {
     return livePriceCache.price;
   }
+  // Try lightweight futures price ticker
   const url = `${BINANCE_FUTURES_BASE}/fapi/v1/ticker/price?symbol=${symbol}`;
   const res = await fetch(url, {
     headers: { "User-Agent": "quant-desk/1.0" },
@@ -420,18 +421,18 @@ export async function fetchLivePrice(symbol: string): Promise<number> {
     livePriceCache = { symbol, price, timestamp: now };
     return price;
   }
-  // Fallback to spot
-  const spotRes = await fetch(`${BINANCE_SPOT_BASE}/api/v3/ticker/price?symbol=${symbol}`, {
-    headers: { "User-Agent": "quant-desk/1.0" },
-    signal: AbortSignal.timeout(2000),
-  });
-  if (spotRes.ok) {
-    const data = (await spotRes.json()) as { symbol: string; price: string };
-    const price = parseFloat(data.price);
-    livePriceCache = { symbol, price, timestamp: now };
-    return price;
+  // Fallback: derive from a 1m kline (proven to work on cloud egress IPs)
+  try {
+    const kline = await fetchKlines(symbol, "1m", 1);
+    const price = kline.candles[kline.candles.length - 1]?.close;
+    if (price) {
+      livePriceCache = { symbol, price, timestamp: now };
+      return price;
+    }
+  } catch {
+    // continue
   }
-  // Last resort: fall back to cached or anchor
+  // Last resort: cached or anchor
   if (livePriceCache && livePriceCache.symbol === symbol) return livePriceCache.price;
   return DEFAULT_ANCHOR_PRICES[symbol] || 100;
 }
