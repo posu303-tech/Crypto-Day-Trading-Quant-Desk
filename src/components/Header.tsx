@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Activity,
   Clock,
@@ -10,6 +10,65 @@ import {
   DollarSign,
   Percent,
 } from "lucide-react";
+
+// Fast live-price ticker: polls a lightweight endpoint every 1s
+const LivePrice: React.FC<{ symbol: string }> = ({ symbol }) => {
+  const [price, setPrice] = useState<number | null>(null);
+  const [flash, setFlash] = useState<"up" | "down" | null>(null);
+  const prevRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/live-price?symbol=${encodeURIComponent(symbol)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!active) return;
+        setPrice((prev) => {
+          if (prev !== null && data.price !== prev) {
+            setFlash(data.price > prev ? "up" : "down");
+          }
+          return data.price;
+        });
+      } catch {
+        // keep last price
+      }
+    };
+    tick();
+    const iv = setInterval(tick, 1000);
+    return () => {
+      active = false;
+      clearInterval(iv);
+    };
+  }, [symbol]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 600);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  const textColor =
+    flash === "up"
+      ? "text-emerald-300"
+      : flash === "down"
+      ? "text-rose-300"
+      : "text-slate-100";
+
+  return (
+    <div className="flex items-center gap-1.5 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
+      <span className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider text-slate-500">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+        Live
+      </span>
+      <span className={`text-sm font-mono font-semibold tabular-nums ${textColor} transition-colors duration-200`}>
+        {price != null ? `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+      </span>
+    </div>
+  );
+};
+
 
 interface HeaderProps {
   currentSymbol: string;
@@ -109,6 +168,8 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Global Controls: Equity, Risk, Refresh */}
         <div className="flex items-center gap-2 ml-auto">
+          {/* Fast live price ticker */}
+          <LivePrice symbol={currentSymbol} />
           {/* AI badge */}
           <div
             title={

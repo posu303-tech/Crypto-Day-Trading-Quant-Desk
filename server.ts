@@ -7,6 +7,7 @@ import {
   fetchOrderBook,
   fetchDerivativesData,
   fetchBulkTickers,
+  fetchLivePrice,
 } from "./src/server/binance";
 import {
   evaluateMarketStructure,
@@ -66,6 +67,17 @@ async function startServer() {
   // Health check
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // Lightweight live price stream (fast poll, cached 800ms)
+  app.get("/api/live-price", async (req, res) => {
+    try {
+      const symbol = (req.query.symbol as string || "BTCUSDT").toUpperCase();
+      const price = await fetchLivePrice(symbol);
+      res.json({ symbol, price, timestamp: Date.now() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Live price unavailable" });
+    }
   });
 
   // Tickers list

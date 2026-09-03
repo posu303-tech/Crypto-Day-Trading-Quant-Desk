@@ -400,6 +400,42 @@ let cachedTickers: Array<{
 }> | null = null;
 let lastTickersFetchTime = 0;
 
+// Fast live price for a single symbol (lightweight, for high-frequency polling)
+let livePriceCache: { symbol: string; price: number; timestamp: number } | null = null;
+const LIVE_PRICE_TTL_MS = 700;
+
+export async function fetchLivePrice(symbol: string): Promise<number> {
+  const now = Date.now();
+  if (livePriceCache && livePriceCache.symbol === symbol && now - livePriceCache.timestamp < LIVE_PRICE_TTL_MS) {
+    return livePriceCache.price;
+  }
+  const url = `${BINANCE_FUTURES_BASE}/fapi/v1/ticker/price?symbol=${symbol}`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "quant-desk/1.0" },
+    signal: AbortSignal.timeout(2000),
+  });
+  if (res.ok) {
+    const data = (await res.json()) as { symbol: string; price: string };
+    const price = parseFloat(data.price);
+    livePriceCache = { symbol, price, timestamp: now };
+    return price;
+  }
+  // Fallback to spot
+  const spotRes = await fetch(`${BINANCE_SPOT_BASE}/api/v3/ticker/price?symbol=${symbol}`, {
+    headers: { "User-Agent": "quant-desk/1.0" },
+    signal: AbortSignal.timeout(2000),
+  });
+  if (spotRes.ok) {
+    const data = (await spotRes.json()) as { symbol: string; price: string };
+    const price = parseFloat(data.price);
+    livePriceCache = { symbol, price, timestamp: now };
+    return price;
+  }
+  // Last resort: fall back to cached or anchor
+  if (livePriceCache && livePriceCache.symbol === symbol) return livePriceCache.price;
+  return DEFAULT_ANCHOR_PRICES[symbol] || 100;
+}
+
 export async function fetchBulkTickers(requestedSymbols: string[]): Promise<
   Array<{
     symbol: string;
